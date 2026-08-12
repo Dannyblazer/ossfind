@@ -3,13 +3,16 @@ package gh
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
-// RepoInfo is the subset of GitHub's repo response used for difficulty scoring.
+// RepoInfo is the subset of GitHub's repo response used for difficulty
+// scoring and repo-health checks.
 type RepoInfo struct {
-	FullName        string `json:"full_name"`
-	StargazersCount int    `json:"stargazers_count"`
-	OpenIssuesCount int    `json:"open_issues_count"`
+	FullName        string    `json:"full_name"`
+	StargazersCount int       `json:"stargazers_count"`
+	OpenIssuesCount int       `json:"open_issues_count"`
+	PushedAt        time.Time `json:"pushed_at"` // last commit push -- staleness signal
 }
 
 // GetRepo fetches basic metadata for a single "owner/name" repo.
