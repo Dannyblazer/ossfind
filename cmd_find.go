@@ -14,25 +14,30 @@ import (
 func runFind(args []string) {
 	fs := flag.NewFlagSet("find", flag.ExitOnError)
 	var (
-		languages   = fs.String("languages", "Go", "comma-separated GitHub language names (e.g. Go,Python)")
-		level       = fs.String("level", "beginner", "beginner | intermediate | advanced (sets a default label set)")
-		labelsFlag  = fs.String("labels", "", "comma-separated labels; overrides -level's default labels")
-		sinceDays   = fs.Int("since", 7, "only include issues created in the last N days (0 = no limit)")
-		limit       = fs.Int("limit", 20, "max issues to print after merging/deduping")
-		perQuery    = fs.Int("per-query", 20, "max results fetched per individual search query")
-		sortBy      = fs.String("sort", "updated", "updated | created | difficulty")
-		score       = fs.Bool("score", false, "attach a rough difficulty estimate (comments + repo stars) to each issue")
-		scorePool   = fs.Int("score-pool", 40, "when -sort difficulty, how many of the most recent candidates to score before ranking (bounds API calls)")
-		token       = fs.String("token", os.Getenv("GITHUB_TOKEN"), "GitHub token (defaults to $GITHUB_TOKEN; raises your rate limit)")
-		includeAll  = fs.Bool("include-assigned", false, "include issues that already have an assignee")
-		asJSON      = fs.Bool("json", false, "print raw JSON instead of a table")
-		verbose     = fs.Bool("v", false, "log each query and rate-limit status to stderr")
-		cooldown    = fs.Int("cooldown", 7, "days to hide an issue after it's been shown once (0 = never hide repeats)")
-		showRepeats = fs.Bool("show-repeats", false, "ignore the cooldown for this run (shows previously-seen issues too)")
-		noState     = fs.Bool("no-state", false, "don't read or write local history at all (stateless run)")
-		statePath   = fs.String("state-path", "", "override the local state file location (default: ~/.config/ossfind/state.json)")
-		auto        = fs.Bool("auto", false, "auto-detect -languages and -level from a GitHub user's own repo languages + merged PR count")
-		githubUser  = fs.String("github-user", "", "GitHub username to auto-detect from (default: the token's own user, if a token is set)")
+		languages    = fs.String("languages", "Go", "comma-separated GitHub language names (e.g. Go,Python)")
+		level        = fs.String("level", "beginner", "beginner | intermediate | advanced (sets a default label set)")
+		labelsFlag   = fs.String("labels", "", "comma-separated labels; overrides -level's default labels")
+		sinceDays    = fs.Int("since", 7, "only include issues created in the last N days (0 = no limit)")
+		limit        = fs.Int("limit", 20, "max issues to print after merging/deduping")
+		perQuery     = fs.Int("per-query", 20, "max results fetched per individual search query")
+		sortBy       = fs.String("sort", "updated", "updated | created | difficulty")
+		score        = fs.Bool("score", false, "attach a rough difficulty estimate (comments + repo stars) to each issue")
+		scorePool    = fs.Int("score-pool", 40, "when -sort difficulty, how many of the most recent candidates to score before ranking (bounds API calls)")
+		token        = fs.String("token", os.Getenv("GITHUB_TOKEN"), "GitHub token (defaults to $GITHUB_TOKEN; raises your rate limit)")
+		includeAll   = fs.Bool("include-assigned", false, "include issues that already have an assignee")
+		asJSON       = fs.Bool("json", false, "print raw JSON instead of a table")
+		verbose      = fs.Bool("v", false, "log each query and rate-limit status to stderr")
+		cooldown     = fs.Int("cooldown", 7, "days to hide an issue after it's been shown once (0 = never hide repeats)")
+		showRepeats  = fs.Bool("show-repeats", false, "ignore the cooldown for this run (shows previously-seen issues too)")
+		noState      = fs.Bool("no-state", false, "don't read or write local history at all (stateless run)")
+		statePath    = fs.String("state-path", "", "override the local state file location (default: ~/.config/ossfind/state.json)")
+		auto         = fs.Bool("auto", false, "auto-detect -languages and -level from a GitHub user's own repo languages + merged PR count")
+		githubUser   = fs.String("github-user", "", "GitHub username to auto-detect from (default: the token's own user, if a token is set)")
+		health       = fs.Bool("health", false, "filter out issues from stale or unresponsive repos (~2 extra API calls per unique repo)")
+		maxStaleDays = fs.Int("max-stale-days", 180, "with -health, filter out repos with no push in this many days")
+		minMergeRate = fs.Float64("min-merge-rate", 0.2, "with -health, filter out repos whose recent PR merge rate is below this (0.0-1.0)")
+		prSample     = fs.Int("pr-sample", 10, "with -health, how many recently-closed PRs to sample for merge rate")
+		healthPool   = fs.Int("health-pool", 30, "with -health, how many of the most recent candidates to health-check (bounds API calls)")
 	)
 	fs.Parse(args)
 
@@ -163,10 +168,52 @@ func runFind(args []string) {
 		issues = fresh
 	}
 
-	if len(issues) == 0 {
-		if skippedForCooldown > 0 {
-			fmt.Printf("No fresh issues right now — %d matched but were already shown within the last %d day(s). Try -show-repeats or -cooldown 0.\n", skippedForCooldown, *cooldown)
+	// Filter out issues from stale/unresponsive repos, before truncating to
+	// -limit. Bounded to a pool so a large candidate set doesn't turn into
+	// hundreds of extra API calls.
+	skippedForHealth := 0
+	if *health && len(issues) > 0 {
+		pool := *limit
+		if sortByDifficulty && *scorePool > pool {
+			pool = *scorePool
+		}
+		if *healthPool > pool {
+			pool = *healthPool
+		}
+		candidates := issues
+		if len(candidates) > pool {
+			candidates = candidates[:pool]
+		}
+
+		kept, dropped, healthByRepo, err := client.FilterHealthy(candidates, gh.HealthOptions{
+			MaxStaleDays: *maxStaleDays,
+			MinMergeRate: *minMergeRate,
+			PRSample:     *prSample,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: -health check failed (%v) — continuing without it\n", err)
 		} else {
+			skippedForHealth = len(dropped)
+			issues = kept
+			if *verbose {
+				for repo, h := range healthByRepo {
+					if !h.Healthy {
+						fmt.Fprintf(os.Stderr, "  filtered %s: %s\n", repo, h.Reason)
+					}
+				}
+			}
+		}
+	}
+
+	if len(issues) == 0 {
+		switch {
+		case skippedForHealth > 0 && skippedForCooldown > 0:
+			fmt.Printf("No matching issues right now — %d hidden by the %d-day cooldown, %d filtered for stale/unresponsive repos.\n", skippedForCooldown, *cooldown, skippedForHealth)
+		case skippedForHealth > 0:
+			fmt.Printf("No healthy-repo issues right now — %d matched but were filtered (inactive repo or low PR merge rate). Try -max-stale-days, -min-merge-rate, or turn off -health.\n", skippedForHealth)
+		case skippedForCooldown > 0:
+			fmt.Printf("No fresh issues right now — %d matched but were already shown within the last %d day(s). Try -show-repeats or -cooldown 0.\n", skippedForCooldown, *cooldown)
+		default:
 			fmt.Println("No matching issues found right now — try a wider -since window, a different -level, or add -include-assigned.")
 		}
 		return
@@ -237,5 +284,8 @@ func runFind(args []string) {
 
 	if skippedForCooldown > 0 {
 		fmt.Fprintf(os.Stderr, "(%d previously-seen match(es) hidden by the %d-day cooldown — use -show-repeats to include them)\n", skippedForCooldown, *cooldown)
+	}
+	if skippedForHealth > 0 {
+		fmt.Fprintf(os.Stderr, "(%d match(es) filtered for stale/unresponsive repos — use -v to see why, or adjust -max-stale-days/-min-merge-rate)\n", skippedForHealth)
 	}
 }
