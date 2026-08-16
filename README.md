@@ -232,6 +232,31 @@ results, dedupes by issue URL, and sorts by `updated_at` descending.
 It respects `X-RateLimit-Remaining`/`X-RateLimit-Reset` and sleeps +
 retries once if you get rate-limited mid-run.
 
+## Why this matched
+
+Every issue's table row (and JSON object) includes a `WHY`/`why` field
+explaining the match instead of asking you to trust the ranking:
+
+- **Always**: which searched label matched (`label: good first issue`),
+  or `language + recency match (no label filter)` for `-level advanced`
+- **With `-score`**: the difficulty inputs — `3 comment(s), 120 star(s)
+  → Easy (score 1/4)`
+- **With `-health`**: the repo's health metrics — `repo: last push 3d
+  ago; 8/10 recent PRs merged (80%)`
+
+```
+$ ossfind -languages Go -level beginner -score -health
+DIFFICULTY  REPO             TITLE                WHY                                                          UPDATED     URL
+Easy        gofiber/fiber    fix typo in README   label: good first issue; 1 comment(s), 34500 star(s) →       2026-08-10  https://...
+                                                    Easy (score 1/4); repo: last push 2d ago; 9/10 recent PRs
+                                                    merged (90%)
+```
+
+Neither CodeTriage nor goodfirstissue.dev explain their matches at all
+— this is pure output formatting on top of data `-score`/`-health`
+already compute, so there's no extra API cost beyond what those flags
+already pay.
+
 ## Level → label mapping (defaults, override with `-labels`)
 
 - `beginner` → `good first issue`
@@ -248,7 +273,7 @@ retries once if you get rate-limited mid-run.
 3. Doc-gap detection for Go (`go doc`-style missing-comment scan) and Python (`ast`-based missing-docstring scan)
 4. `-type triage` mode surfacing issues that need repro/confirmation, not just code fixes
 5. ✅ Local habit loop — state, cooldown, streaks, `stats` subcommand
-6. "Why this matched" transparency in output
+6. ✅ "Why this matched" transparency in output (see above)
 7. Multi-forge support (Codeberg/Forgejo)
 
 Also on the list: cache repo star lookups to disk between runs to cut
