@@ -170,8 +170,11 @@ func runFind(args []string) {
 
 	// Filter out issues from stale/unresponsive repos, before truncating to
 	// -limit. Bounded to a pool so a large candidate set doesn't turn into
-	// hundreds of extra API calls.
+	// hundreds of extra API calls. healthByRepo is kept (not just used
+	// locally) so surviving issues can show their health reasoning too --
+	// not just the ones that got filtered out.
 	skippedForHealth := 0
+	var healthByRepo map[string]gh.RepoHealth
 	if *health && len(issues) > 0 {
 		pool := *limit
 		if sortByDifficulty && *scorePool > pool {
@@ -185,7 +188,7 @@ func runFind(args []string) {
 			candidates = candidates[:pool]
 		}
 
-		kept, dropped, healthByRepo, err := client.FilterHealthy(candidates, gh.HealthOptions{
+		kept, dropped, checked, err := client.FilterHealthy(candidates, gh.HealthOptions{
 			MaxStaleDays: *maxStaleDays,
 			MinMergeRate: *minMergeRate,
 			PRSample:     *prSample,
@@ -195,6 +198,7 @@ func runFind(args []string) {
 		} else {
 			skippedForHealth = len(dropped)
 			issues = kept
+			healthByRepo = checked
 			if *verbose {
 				for repo, h := range healthByRepo {
 					if !h.Healthy {
@@ -269,17 +273,17 @@ func runFind(args []string) {
 
 	if *asJSON {
 		if finalIssues != nil {
-			writeJSON(finalIssues)
+			writeIssuesJSON(finalIssues, labels, healthByRepo)
 		} else {
-			writeJSON(finalScored)
+			writeScoredJSON(finalScored, labels, healthByRepo)
 		}
 		return
 	}
 
 	if finalIssues != nil {
-		printTable(finalIssues)
+		printTable(finalIssues, labels, healthByRepo)
 	} else {
-		printScoredTable(finalScored)
+		printScoredTable(finalScored, labels, healthByRepo)
 	}
 
 	if skippedForCooldown > 0 {

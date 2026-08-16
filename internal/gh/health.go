@@ -86,18 +86,10 @@ func (c *Client) CheckRepoHealth(repoFullName string, opts HealthOptions) (RepoH
 
 	daysSincePush := int(time.Since(info.PushedAt).Hours() / 24)
 
-	var reasons []string
 	stale := daysSincePush > opts.MaxStaleDays
-	if stale {
-		reasons = append(reasons, fmt.Sprintf("no push in %d days (limit %d)", daysSincePush, opts.MaxStaleDays))
-	}
 	unresponsive := mergeRate >= 0 && mergeRate < opts.MinMergeRate
-	if unresponsive {
-		reasons = append(reasons, fmt.Sprintf("merge rate %.0f%% (%d/%d recent PRs) below %.0f%% threshold",
-			mergeRate*100, merged, len(prs), opts.MinMergeRate*100))
-	}
-
 	healthy := !stale && !unresponsive
+
 	status := "Healthy"
 	switch {
 	case stale && unresponsive:
@@ -107,10 +99,27 @@ func (c *Client) CheckRepoHealth(repoFullName string, opts HealthOptions) (RepoH
 	case unresponsive:
 		status = "Unresponsive"
 	}
-	reason := "active and responsive"
-	if len(reasons) > 0 {
-		reason = strings.Join(reasons, "; ")
+
+	// Reason always states the underlying metrics -- useful both when a
+	// repo is filtered out (why it failed) and when it's kept (why it's
+	// trusted), not just a generic "looks fine" for the healthy case.
+	var parts []string
+	pushPart := fmt.Sprintf("last push %dd ago", daysSincePush)
+	if stale {
+		pushPart += fmt.Sprintf(" (over the %dd limit)", opts.MaxStaleDays)
 	}
+	parts = append(parts, pushPart)
+
+	if mergeRate >= 0 {
+		mergePart := fmt.Sprintf("%d/%d recent PRs merged (%.0f%%)", merged, len(prs), mergeRate*100)
+		if unresponsive {
+			mergePart += fmt.Sprintf(" — below %.0f%% threshold", opts.MinMergeRate*100)
+		}
+		parts = append(parts, mergePart)
+	} else {
+		parts = append(parts, "too few closed PRs to judge merge rate")
+	}
+	reason := strings.Join(parts, "; ")
 
 	return RepoHealth{
 		Repo:             repoFullName,
